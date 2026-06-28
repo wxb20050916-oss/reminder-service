@@ -30,6 +30,18 @@ function getOpenidFromRequest(req) {
 function requestJson(url, options = {}, body) {
   return new Promise((resolve, reject) => {
     const payload = body ? JSON.stringify(body) : "";
+    const timeoutMs = options.timeoutMs || 5000;
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject({
+        code: "wechat_request_timeout",
+        message: `微信接口请求超过 ${timeoutMs}ms`,
+        url: url.origin + url.pathname
+      });
+      req.destroy();
+    }, timeoutMs);
     const req = https.request(url, {
       method: options.method || "GET",
       headers: Object.assign({
@@ -42,6 +54,9 @@ function requestJson(url, options = {}, body) {
         raw += chunk;
       });
       res.on("end", () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
         let data;
         try {
           data = raw ? JSON.parse(raw) : {};
@@ -64,7 +79,12 @@ function requestJson(url, options = {}, body) {
         resolve(data);
       });
     });
-    req.on("error", reject);
+    req.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      reject(err);
+    });
     if (payload) req.write(payload);
     req.end();
   });
@@ -76,7 +96,7 @@ async function getAccessToken(appid, appsecret) {
   url.searchParams.set("appid", appid);
   url.searchParams.set("secret", appsecret);
 
-  const result = await requestJson(url);
+  const result = await requestJson(url, { timeoutMs: 5000 });
   if (!result.access_token) {
     throw {
       message: "获取 access_token 失败",
@@ -113,7 +133,22 @@ async function sendSubscribeMessage({ accessToken, openid, type, reminderTime })
     page: "pages/reminders/reminders",
     data: buildSubscribeMessageData(type, reminderTime)
   };
-  return requestJson(url, { method: "POST" }, payload);
+  return requestJson(url, { method: "POST", timeoutMs: 5000 }, payload);
+}
+
+function getWechatErrorLog(result) {
+  const source = result && (result.detail || result.data || result);
+  return {
+    errcode: source && Object.prototype.hasOwnProperty.call(source, "errcode") ? source.errcode : undefined,
+    errmsg: source && source.errmsg ? source.errmsg : undefined
+  };
+}
+
+function sendJsonOnce(state, res, statusCode, payload) {
+  if (state.responded) return;
+  state.responded = true;
+  clearTimeout(state.timer);
+  res.status(statusCode).json(payload);
 }
 
 app.use(express.json());
@@ -135,53 +170,92 @@ app.post("/api/reminders/preview", (req, res) => {
 });
 
 app.post("/api/reminders/send-test", async (req, res) => {
+  console.log("[send-test] request received");
   const { type, reminderTime } = req.body || {};
   const appid = process.env.WECHAT_APPID;
   const appsecret = process.env.WECHAT_APPSECRET;
   const openid = getOpenidFromRequest(req);
+  const responseState = {
+    responded: false,
+    timer: setTimeout(() => {
+      sendJsonOnce(responseState, res, 504, {
+        ok: false,
+        error: "wechat_request_timeout",
+        detail: "send-test 接口总耗时超过 7500ms，已提前返回，避免前端 callContainer timeout。"
+      });
+    }, 7500)
+  };
+
+  console.log("[send-test] diagnostics", {
+    hasAppid: !!appid,
+    hasAppsecret: !!appsecret,
+    hasOpenid: !!openid,
+    headerKeys: Object.keys(req.headers || {})
+  });
 
   if (!openid) {
-    res.status(400).json({
+    sendJsonOnce(responseState, res, 400, {
       ok: false,
-      error: "OPENID_NOT_FOUND",
+      error: "missing_openid",
       detail: "没有从微信云托管请求 header x-wx-openid 中获取到 openid，请确认小程序通过 wx.cloud.callContainer 调用，并检查云托管是否注入该 header。"
     });
     return;
   }
 
   if (!appid || !appsecret) {
-    res.status(500).json({
+    sendJsonOnce(responseState, res, 500, {
       ok: false,
-      error: "WECHAT_ENV_NOT_CONFIGURED",
+      error: "missing_env",
       detail: "请在微信云托管环境变量中配置 WECHAT_APPID 和 WECHAT_APPSECRET。"
     });
     return;
   }
 
+  let stage = "access_token";
   try {
+    console.log("[send-test] requesting access_token");
     const accessToken = await getAccessToken(appid, appsecret);
+    if (responseState.responded) return;
+    console.log("[send-test] access_token result", {
+      errcode: 0,
+      errmsg: ""
+    });
+    console.log("[send-test] calling subscribeMessage.send");
+    stage = "subscribe_message";
     const result = await sendSubscribeMessage({
       accessToken,
       openid,
       type,
       reminderTime
     });
+    if (responseState.responded) return;
+    console.log("[send-test] subscribeMessage.send result", getWechatErrorLog(result));
     if (result.errcode) {
-      res.status(502).json({
+      sendJsonOnce(responseState, res, 502, {
         ok: false,
-        error: "SUBSCRIBE_MESSAGE_SEND_FAILED",
+        error: "subscribe_message_failed",
         detail: result
       });
       return;
     }
-    res.json({
+    sendJsonOnce(responseState, res, 200, {
       ok: true,
       result
     });
   } catch (err) {
-    res.status(500).json({
+    if (responseState.responded) return;
+    const isTimeout = err && (err.code === "wechat_request_timeout" || err.message === "wechat_request_timeout");
+    const error = isTimeout
+      ? "wechat_request_timeout"
+      : (stage === "subscribe_message" ? "subscribe_message_failed" : "access_token_failed");
+    if (stage === "subscribe_message") {
+      console.log("[send-test] subscribeMessage.send result", getWechatErrorLog(err));
+    } else {
+      console.log("[send-test] access_token result", getWechatErrorLog(err));
+    }
+    sendJsonOnce(responseState, res, isTimeout ? 504 : 500, {
       ok: false,
-      error: err && err.message ? err.message : "SEND_TEST_FAILED",
+      error,
       detail: err
     });
   }
