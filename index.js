@@ -136,13 +136,6 @@ function getWechatErrorLog(result) {
   };
 }
 
-function sendJsonOnce(state, res, statusCode, payload) {
-  if (state.responded) return;
-  state.responded = true;
-  clearTimeout(state.timer);
-  res.status(statusCode).json(payload);
-}
-
 app.use(express.json());
 
 app.get("/api/ping", (req, res) => {
@@ -163,22 +156,27 @@ app.post("/api/reminders/preview", (req, res) => {
 
 app.post("/api/reminders/send-test", async (req, res) => {
   console.log("[send-test] request received");
-  const responseState = {
-    responded: false,
-    timer: setTimeout(() => {
-      sendJsonOnce(responseState, res, 504, {
-        ok: false,
-        error: "wechat_request_timeout",
-        detail: "send-test 接口总耗时超过 7500ms，已提前返回，避免前端 callContainer timeout。"
-      });
-    }, 7500)
-  };
-
   try {
     const { type, reminderTime } = req.body || {};
     const appid = process.env.WECHAT_APPID;
     const appsecret = process.env.WECHAT_APPSECRET;
     const openid = getOpenidFromRequest(req);
+
+    if (!openid) {
+      return res.json({
+        ok: false,
+        error: "missing_openid",
+        detail: "没有从微信云托管请求 header x-wx-openid 中获取到 openid，请确认小程序通过 wx.cloud.callContainer 调用，并检查云托管是否注入该 header。"
+      });
+    }
+
+    if (!appid || !appsecret) {
+      return res.json({
+        ok: false,
+        error: "missing_env",
+        detail: "请在微信云托管环境变量中配置 WECHAT_APPID 和 WECHAT_APPSECRET。"
+      });
+    }
 
     console.log("[send-test] diagnostics", {
       hasAppid: !!appid,
@@ -187,25 +185,8 @@ app.post("/api/reminders/send-test", async (req, res) => {
       headerKeys: Object.keys(req.headers || {})
     });
 
-    if (!openid) {
-      return sendJsonOnce(responseState, res, 200, {
-        ok: false,
-        error: "missing_openid",
-        detail: "没有从微信云托管请求 header x-wx-openid 中获取到 openid，请确认小程序通过 wx.cloud.callContainer 调用，并检查云托管是否注入该 header。"
-      });
-    }
-
-    if (!appid || !appsecret) {
-      return sendJsonOnce(responseState, res, 200, {
-        ok: false,
-        error: "missing_env",
-        detail: "请在微信云托管环境变量中配置 WECHAT_APPID 和 WECHAT_APPSECRET。"
-      });
-    }
-
     console.log("[send-test] requesting access_token");
     const tokenData = await getAccessTokenData(appid, appsecret);
-    if (responseState.responded) return;
     console.log("[send-test] access_token result", {
       errcode: tokenData && Object.prototype.hasOwnProperty.call(tokenData, "errcode") ? tokenData.errcode : undefined,
       errmsg: tokenData && tokenData.errmsg ? tokenData.errmsg : undefined
@@ -213,7 +194,7 @@ app.post("/api/reminders/send-test", async (req, res) => {
     console.log("[send-test] access_token exists:", !!(tokenData && tokenData.access_token));
 
     if (!tokenData || !tokenData.access_token) {
-      return sendJsonOnce(responseState, res, 200, {
+      return res.json({
         ok: false,
         error: "access_token_missing",
         detail: tokenData
@@ -228,27 +209,25 @@ app.post("/api/reminders/send-test", async (req, res) => {
       type,
       reminderTime
     });
-    if (responseState.responded) return;
     console.log("[send-test] subscribeMessage result", getWechatErrorLog(result));
     if (result.errcode) {
-      return sendJsonOnce(responseState, res, 200, {
+      return res.json({
         ok: false,
         error: "subscribe_message_failed",
         detail: result
       });
     }
-    return sendJsonOnce(responseState, res, 200, {
+    return res.json({
       ok: true,
       result
     });
   } catch (err) {
-    if (responseState.responded) return;
     console.log("[send-test] exception", {
       message: err && err.message ? err.message : String(err)
     });
-    return sendJsonOnce(responseState, res, 200, {
+    return res.json({
       ok: false,
-      error: err && err.code === "wechat_request_timeout" ? "wechat_request_timeout" : "send_test_exception",
+      error: "send_test_exception",
       detail: String(err && err.message ? err.message : err)
     });
   }
