@@ -90,20 +90,13 @@ function requestJson(url, options = {}, body) {
   });
 }
 
-async function getAccessToken(appid, appsecret) {
+async function getAccessTokenData(appid, appsecret) {
   const url = new URL("https://api.weixin.qq.com/cgi-bin/token");
   url.searchParams.set("grant_type", "client_credential");
   url.searchParams.set("appid", appid);
   url.searchParams.set("secret", appsecret);
 
-  const result = await requestJson(url, { timeoutMs: 5000 });
-  if (!result.access_token) {
-    throw {
-      message: "获取 access_token 失败",
-      detail: result
-    };
-  }
-  return result.access_token;
+  return requestJson(url, { timeoutMs: 5000 });
 }
 
 function buildSubscribeMessageData(type, reminderTime) {
@@ -125,8 +118,7 @@ function buildSubscribeMessageData(type, reminderTime) {
 }
 
 async function sendSubscribeMessage({ accessToken, openid, type, reminderTime }) {
-  const url = new URL("https://api.weixin.qq.com/cgi-bin/message/subscribe/send");
-  url.searchParams.set("access_token", accessToken);
+  const url = new URL(`https://api.weixin.qq.com/cgi-bin/message/subscribe/send?access_token=${accessToken}`);
   const payload = {
     touser: openid,
     template_id: subscribeTemplateId,
@@ -171,10 +163,6 @@ app.post("/api/reminders/preview", (req, res) => {
 
 app.post("/api/reminders/send-test", async (req, res) => {
   console.log("[send-test] request received");
-  const { type, reminderTime } = req.body || {};
-  const appid = process.env.WECHAT_APPID;
-  const appsecret = process.env.WECHAT_APPSECRET;
-  const openid = getOpenidFromRequest(req);
   const responseState = {
     responded: false,
     timer: setTimeout(() => {
@@ -186,42 +174,54 @@ app.post("/api/reminders/send-test", async (req, res) => {
     }, 7500)
   };
 
-  console.log("[send-test] diagnostics", {
-    hasAppid: !!appid,
-    hasAppsecret: !!appsecret,
-    hasOpenid: !!openid,
-    headerKeys: Object.keys(req.headers || {})
-  });
-
-  if (!openid) {
-    sendJsonOnce(responseState, res, 400, {
-      ok: false,
-      error: "missing_openid",
-      detail: "没有从微信云托管请求 header x-wx-openid 中获取到 openid，请确认小程序通过 wx.cloud.callContainer 调用，并检查云托管是否注入该 header。"
-    });
-    return;
-  }
-
-  if (!appid || !appsecret) {
-    sendJsonOnce(responseState, res, 500, {
-      ok: false,
-      error: "missing_env",
-      detail: "请在微信云托管环境变量中配置 WECHAT_APPID 和 WECHAT_APPSECRET。"
-    });
-    return;
-  }
-
-  let stage = "access_token";
   try {
+    const { type, reminderTime } = req.body || {};
+    const appid = process.env.WECHAT_APPID;
+    const appsecret = process.env.WECHAT_APPSECRET;
+    const openid = getOpenidFromRequest(req);
+
+    console.log("[send-test] diagnostics", {
+      hasAppid: !!appid,
+      hasAppsecret: !!appsecret,
+      hasOpenid: !!openid,
+      headerKeys: Object.keys(req.headers || {})
+    });
+
+    if (!openid) {
+      return sendJsonOnce(responseState, res, 200, {
+        ok: false,
+        error: "missing_openid",
+        detail: "没有从微信云托管请求 header x-wx-openid 中获取到 openid，请确认小程序通过 wx.cloud.callContainer 调用，并检查云托管是否注入该 header。"
+      });
+    }
+
+    if (!appid || !appsecret) {
+      return sendJsonOnce(responseState, res, 200, {
+        ok: false,
+        error: "missing_env",
+        detail: "请在微信云托管环境变量中配置 WECHAT_APPID 和 WECHAT_APPSECRET。"
+      });
+    }
+
     console.log("[send-test] requesting access_token");
-    const accessToken = await getAccessToken(appid, appsecret);
+    const tokenData = await getAccessTokenData(appid, appsecret);
     if (responseState.responded) return;
     console.log("[send-test] access_token result", {
-      errcode: 0,
-      errmsg: ""
+      errcode: tokenData && Object.prototype.hasOwnProperty.call(tokenData, "errcode") ? tokenData.errcode : undefined,
+      errmsg: tokenData && tokenData.errmsg ? tokenData.errmsg : undefined
     });
+    console.log("[send-test] access_token exists:", !!(tokenData && tokenData.access_token));
+
+    if (!tokenData || !tokenData.access_token) {
+      return sendJsonOnce(responseState, res, 200, {
+        ok: false,
+        error: "access_token_missing",
+        detail: tokenData
+      });
+    }
+
+    const accessToken = tokenData.access_token;
     console.log("[send-test] calling subscribeMessage.send");
-    stage = "subscribe_message";
     const result = await sendSubscribeMessage({
       accessToken,
       openid,
@@ -229,34 +229,27 @@ app.post("/api/reminders/send-test", async (req, res) => {
       reminderTime
     });
     if (responseState.responded) return;
-    console.log("[send-test] subscribeMessage.send result", getWechatErrorLog(result));
+    console.log("[send-test] subscribeMessage result", getWechatErrorLog(result));
     if (result.errcode) {
-      sendJsonOnce(responseState, res, 502, {
+      return sendJsonOnce(responseState, res, 200, {
         ok: false,
         error: "subscribe_message_failed",
         detail: result
       });
-      return;
     }
-    sendJsonOnce(responseState, res, 200, {
+    return sendJsonOnce(responseState, res, 200, {
       ok: true,
       result
     });
   } catch (err) {
     if (responseState.responded) return;
-    const isTimeout = err && (err.code === "wechat_request_timeout" || err.message === "wechat_request_timeout");
-    const error = isTimeout
-      ? "wechat_request_timeout"
-      : (stage === "subscribe_message" ? "subscribe_message_failed" : "access_token_failed");
-    if (stage === "subscribe_message") {
-      console.log("[send-test] subscribeMessage.send result", getWechatErrorLog(err));
-    } else {
-      console.log("[send-test] access_token result", getWechatErrorLog(err));
-    }
-    sendJsonOnce(responseState, res, isTimeout ? 504 : 500, {
+    console.log("[send-test] exception", {
+      message: err && err.message ? err.message : String(err)
+    });
+    return sendJsonOnce(responseState, res, 200, {
       ok: false,
-      error,
-      detail: err
+      error: err && err.code === "wechat_request_timeout" ? "wechat_request_timeout" : "send_test_exception",
+      detail: String(err && err.message ? err.message : err)
     });
   }
 });
