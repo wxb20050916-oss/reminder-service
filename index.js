@@ -3,6 +3,7 @@ const https = require("https");
 
 const app = express();
 const port = process.env.PORT || 3000;
+const BUILD_TAG = "send-test-debug-20260629-a";
 const subscribeTemplateId = "22C8PNofZUjrU24koEcfpkMZJX0qjr3Matg4PgZGdo4";
 
 const reminderMessages = {
@@ -99,48 +100,12 @@ async function getAccessTokenData(appid, appsecret) {
   return requestJson(url, { timeoutMs: 5000 });
 }
 
-function buildSubscribeMessageData(type, reminderTime) {
-  const key = reminderMessages[type] ? type : "checkin";
-  const normalizedReminderTime = reminderTime
-    ? reminderTime.replace(/^(\d{4})-(\d{2})-(\d{2})\s+(.+)$/, "$1年$2月$3日 $4")
-    : new Date().toLocaleString("zh-CN", { hour12: false });
-  return {
-    thing1: {
-      value: reminderNames[key]
-    },
-    time2: {
-      value: normalizedReminderTime
-    },
-    thing3: {
-      value: reminderMessages[key]
-    }
-  };
-}
-
-async function sendSubscribeMessage({ accessToken, openid, type, reminderTime }) {
-  const url = new URL(`https://api.weixin.qq.com/cgi-bin/message/subscribe/send?access_token=${accessToken}`);
-  const payload = {
-    touser: openid,
-    template_id: subscribeTemplateId,
-    page: "pages/reminders/reminders",
-    data: buildSubscribeMessageData(type, reminderTime)
-  };
-  return requestJson(url, { method: "POST", timeoutMs: 5000 }, payload);
-}
-
-function getWechatErrorLog(result) {
-  const source = result && (result.detail || result.data || result);
-  return {
-    errcode: source && Object.prototype.hasOwnProperty.call(source, "errcode") ? source.errcode : undefined,
-    errmsg: source && source.errmsg ? source.errmsg : undefined
-  };
-}
-
 app.use(express.json());
 
 app.get("/api/ping", (req, res) => {
   res.json({
     ok: true,
+    build: BUILD_TAG,
     message: "reminder service is running",
     time: new Date().toISOString()
   });
@@ -156,70 +121,56 @@ app.post("/api/reminders/preview", (req, res) => {
 
 app.post("/api/reminders/send-test", async (req, res) => {
   console.log("[send-test] request received");
+  console.log(`[send-test] build tag: ${BUILD_TAG}`);
   try {
-    const { type, reminderTime } = req.body || {};
     const appid = process.env.WECHAT_APPID;
     const appsecret = process.env.WECHAT_APPSECRET;
     const openid = getOpenidFromRequest(req);
 
+    console.log("[send-test] diagnostics", {
+      hasAppid: !!appid,
+      hasAppsecret: !!appsecret,
+      hasOpenid: !!openid
+    });
+
     if (!openid) {
       return res.json({
         ok: false,
-        error: "missing_openid",
-        detail: "没有从微信云托管请求 header x-wx-openid 中获取到 openid，请确认小程序通过 wx.cloud.callContainer 调用，并检查云托管是否注入该 header。"
+        stage: "missing_openid",
+        build: BUILD_TAG
       });
     }
 
     if (!appid || !appsecret) {
       return res.json({
         ok: false,
-        error: "missing_env",
-        detail: "请在微信云托管环境变量中配置 WECHAT_APPID 和 WECHAT_APPSECRET。"
+        stage: "missing_env",
+        build: BUILD_TAG
       });
     }
 
-    console.log("[send-test] diagnostics", {
-      hasAppid: !!appid,
-      hasAppsecret: !!appsecret,
-      hasOpenid: !!openid,
-      headerKeys: Object.keys(req.headers || {})
-    });
-
-    console.log("[send-test] requesting access_token");
+    console.log("[send-test] before access_token fetch");
     const tokenData = await getAccessTokenData(appid, appsecret);
+    console.log("[send-test] after access_token fetch");
     console.log("[send-test] access_token result", {
       errcode: tokenData && Object.prototype.hasOwnProperty.call(tokenData, "errcode") ? tokenData.errcode : undefined,
       errmsg: tokenData && tokenData.errmsg ? tokenData.errmsg : undefined
     });
-    console.log("[send-test] access_token exists:", !!(tokenData && tokenData.access_token));
 
     if (!tokenData || !tokenData.access_token) {
       return res.json({
         ok: false,
-        error: "access_token_missing",
+        stage: "access_token_failed",
+        build: BUILD_TAG,
         detail: tokenData
       });
     }
 
-    const accessToken = tokenData.access_token;
-    console.log("[send-test] calling subscribeMessage.send");
-    const result = await sendSubscribeMessage({
-      accessToken,
-      openid,
-      type,
-      reminderTime
-    });
-    console.log("[send-test] subscribeMessage result", getWechatErrorLog(result));
-    if (result.errcode) {
-      return res.json({
-        ok: false,
-        error: "subscribe_message_failed",
-        detail: result
-      });
-    }
+    console.log("[send-test] access_token exists: true");
     return res.json({
       ok: true,
-      result
+      stage: "access_token_ok",
+      build: BUILD_TAG
     });
   } catch (err) {
     console.log("[send-test] exception", {
@@ -227,7 +178,8 @@ app.post("/api/reminders/send-test", async (req, res) => {
     });
     return res.json({
       ok: false,
-      error: "send_test_exception",
+      stage: "exception",
+      build: BUILD_TAG,
       detail: String(err && err.message ? err.message : err)
     });
   }
