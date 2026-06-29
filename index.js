@@ -168,19 +168,22 @@ app.post("/api/reminders/send-test", async (req, res) => {
 
     console.log("[send-test] access_token exists: true");
     return res.json({
-      ok: true,
-      stage: "access_token_ok",
-      build: BUILD_TAG
+      ok: false,
+      stage: "access_token_ok_debug_only",
+      build: BUILD_TAG,
+      detail: "access_token ok, subscribe send is still paused"
     });
   } catch (err) {
     console.log("[send-test] exception", {
       message: err && err.message ? err.message : String(err)
     });
+    const message = String(err && err.message ? err.message : err);
+    const isTlsCertificateError = /self-signed certificate|certificate|unable to verify/i.test(message);
     return res.json({
       ok: false,
-      stage: "exception",
+      stage: isTlsCertificateError ? "tls_certificate_error" : "exception",
       build: BUILD_TAG,
-      detail: String(err && err.message ? err.message : err)
+      detail: message
     });
   }
 });
