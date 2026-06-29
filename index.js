@@ -3,7 +3,7 @@ const https = require("https");
 
 const app = express();
 const port = process.env.PORT || 3000;
-const BUILD_TAG = "send-test-real-send-20260629-d";
+const BUILD_TAG = "manual-send-20260629-a";
 const subscribeTemplateId = "22C8PNofZUjrU24koEcfpkMZJX0qjr3Matg4PgZGdo4";
 
 const reminderMessages = {
@@ -100,26 +100,45 @@ async function getAccessTokenData(appid, appsecret) {
   return requestJson(url, { timeoutMs: 5000 });
 }
 
-function buildSubscribeMessageData() {
+const sendReminderConfig = {
+  breakfast: {
+    name: "早餐提醒",
+    time: "08:30",
+    note: "宝宝，早餐吃稳一点"
+  },
+  workout: {
+    name: "运动提醒",
+    time: "19:30",
+    note: "宝宝，今天轻轻动一下"
+  },
+  checkin: {
+    name: "今日小结",
+    time: "22:30",
+    note: "宝宝，记得写一下今天的小结"
+  }
+};
+
+function buildSubscribeMessageData(type) {
+  const config = sendReminderConfig[type] || sendReminderConfig.checkin;
   return {
     thing1: {
-      value: "减脂打卡"
+      value: config.name
     },
     thing3: {
       value: "今日提醒"
     },
     thing4: {
-      value: "宝宝，记得完成小任务"
+      value: config.note
     },
     time13: {
-      value: "08:30"
+      value: config.time
     }
   };
 }
 
-async function sendSubscribeMessage({ accessToken, openid, type, reminderTime }) {
+async function sendSubscribeMessage({ accessToken, openid, type }) {
   const url = new URL(`https://api.weixin.qq.com/cgi-bin/message/subscribe/send?access_token=${accessToken}`);
-  const data = buildSubscribeMessageData(type, reminderTime);
+  const data = buildSubscribeMessageData(type);
   const payload = {
     touser: openid,
     template_id: subscribeTemplateId,
@@ -160,6 +179,7 @@ app.post("/api/reminders/send-test", async (req, res) => {
   console.log("[send-test] request received");
   console.log(`[send-test] build tag: ${BUILD_TAG}`);
   try {
+    const { type, subscribeDate } = req.body || {};
     const appid = process.env.WECHAT_APPID;
     const appsecret = process.env.WECHAT_APPSECRET;
     const openid = getOpenidFromRequest(req);
@@ -167,7 +187,9 @@ app.post("/api/reminders/send-test", async (req, res) => {
     console.log("[send-test] diagnostics", {
       hasAppid: !!appid,
       hasAppsecret: !!appsecret,
-      hasOpenid: !!openid
+      hasOpenid: !!openid,
+      type: type || "checkin",
+      subscribeDate: subscribeDate || ""
     });
 
     if (!openid) {
@@ -209,8 +231,7 @@ app.post("/api/reminders/send-test", async (req, res) => {
     const sendResult = await sendSubscribeMessage({
       accessToken,
       openid,
-      type: req.body && req.body.type,
-      reminderTime: req.body && req.body.reminderTime
+      type
     });
     console.log("[send-test] subscribeMessage result", getWechatResultLog(sendResult));
 
