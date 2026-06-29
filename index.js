@@ -3,7 +3,7 @@ const https = require("https");
 
 const app = express();
 const port = process.env.PORT || 3000;
-const BUILD_TAG = "send-test-debug-20260629-b";
+const BUILD_TAG = "send-test-real-send-20260629-a";
 const subscribeTemplateId = "22C8PNofZUjrU24koEcfpkMZJX0qjr3Matg4PgZGdo4";
 
 const reminderMessages = {
@@ -100,6 +100,44 @@ async function getAccessTokenData(appid, appsecret) {
   return requestJson(url, { timeoutMs: 5000 });
 }
 
+function buildSubscribeMessageData(type, reminderTime) {
+  const key = reminderMessages[type] ? type : "checkin";
+  const normalizedReminderTime = reminderTime
+    ? reminderTime.replace(/^(\d{4})-(\d{2})-(\d{2})\s+(.+)$/, "$1年$2月$3日 $4")
+    : new Date().toLocaleString("zh-CN", { hour12: false });
+  return {
+    thing1: {
+      value: reminderNames[key]
+    },
+    time2: {
+      value: normalizedReminderTime
+    },
+    thing3: {
+      value: reminderMessages[key]
+    }
+  };
+}
+
+async function sendSubscribeMessage({ accessToken, openid, type, reminderTime }) {
+  const url = new URL(`https://api.weixin.qq.com/cgi-bin/message/subscribe/send?access_token=${accessToken}`);
+  const data = buildSubscribeMessageData(type, reminderTime);
+  const payload = {
+    touser: openid,
+    template_id: subscribeTemplateId,
+    page: "pages/reminders/reminders",
+    data
+  };
+  console.log("[send-test] subscribeMessage data keys", Object.keys(data));
+  return requestJson(url, { method: "POST", timeoutMs: 5000 }, payload);
+}
+
+function getWechatResultLog(result) {
+  return {
+    errcode: result && Object.prototype.hasOwnProperty.call(result, "errcode") ? result.errcode : undefined,
+    errmsg: result && result.errmsg ? result.errmsg : undefined
+  };
+}
+
 app.use(express.json());
 
 app.get("/api/ping", (req, res) => {
@@ -167,28 +205,49 @@ app.post("/api/reminders/send-test", async (req, res) => {
     }
 
     console.log("[send-test] access_token exists: true");
+    const accessToken = tokenData.access_token;
+    console.log("[send-test] calling subscribeMessage.send");
+    const sendResult = await sendSubscribeMessage({
+      accessToken,
+      openid,
+      type: req.body && req.body.type,
+      reminderTime: req.body && req.body.reminderTime
+    });
+    console.log("[send-test] subscribeMessage result", getWechatResultLog(sendResult));
+
+    if (sendResult && sendResult.errcode === 0) {
+      return res.json({
+        ok: true,
+        stage: "subscribe_message_sent",
+        build: BUILD_TAG,
+        result: sendResult
+      });
+    }
+
     return res.json({
       ok: false,
-      stage: "access_token_ok_debug_only",
+      stage: "subscribe_message_failed",
       build: BUILD_TAG,
-      detail: "access_token ok, subscribe send is still paused"
+      detail: sendResult
     });
   } catch (err) {
     const message = String(err && err.message ? err.message : err);
-    const errorDetail = {
+    const logDetail = {
       name: err && err.name ? err.name : undefined,
       code: err && err.code ? err.code : undefined,
       message,
       causeCode: err && err.cause && err.cause.code ? err.cause.code : undefined,
       causeMessage: err && err.cause && err.cause.message ? err.cause.message : undefined
     };
-    console.log("[send-test] exception", errorDetail);
+    console.log("[send-test] exception", logDetail);
     const isTlsCertificateError = /self-signed certificate|certificate|unable to verify/i.test(message);
     return res.json({
       ok: false,
       stage: isTlsCertificateError ? "tls_certificate_error" : "exception",
       build: BUILD_TAG,
-      detail: errorDetail
+      detail: message,
+      code: err && err.code ? err.code : undefined,
+      name: err && err.name ? err.name : undefined
     });
   }
 });
