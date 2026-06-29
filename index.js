@@ -3,7 +3,7 @@ const https = require("https");
 
 const app = express();
 const port = process.env.PORT || 3000;
-const BUILD_TAG = "send-test-debug-20260629-a";
+const BUILD_TAG = "send-test-debug-20260629-b";
 const subscribeTemplateId = "22C8PNofZUjrU24koEcfpkMZJX0qjr3Matg4PgZGdo4";
 
 const reminderMessages = {
@@ -174,16 +174,21 @@ app.post("/api/reminders/send-test", async (req, res) => {
       detail: "access_token ok, subscribe send is still paused"
     });
   } catch (err) {
-    console.log("[send-test] exception", {
-      message: err && err.message ? err.message : String(err)
-    });
     const message = String(err && err.message ? err.message : err);
+    const errorDetail = {
+      name: err && err.name ? err.name : undefined,
+      code: err && err.code ? err.code : undefined,
+      message,
+      causeCode: err && err.cause && err.cause.code ? err.cause.code : undefined,
+      causeMessage: err && err.cause && err.cause.message ? err.cause.message : undefined
+    };
+    console.log("[send-test] exception", errorDetail);
     const isTlsCertificateError = /self-signed certificate|certificate|unable to verify/i.test(message);
     return res.json({
       ok: false,
       stage: isTlsCertificateError ? "tls_certificate_error" : "exception",
       build: BUILD_TAG,
-      detail: message
+      detail: errorDetail
     });
   }
 });
