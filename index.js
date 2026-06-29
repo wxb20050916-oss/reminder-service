@@ -3,7 +3,7 @@ const https = require("https");
 
 const app = express();
 const port = process.env.PORT || 3000;
-const BUILD_TAG = "send-test-real-send-20260629-c";
+const BUILD_TAG = "send-test-real-send-20260629-d";
 const subscribeTemplateId = "22C8PNofZUjrU24koEcfpkMZJX0qjr3Matg4PgZGdo4";
 
 const reminderMessages = {
@@ -105,14 +105,14 @@ function buildSubscribeMessageData() {
     thing1: {
       value: "减脂打卡"
     },
-    time2: {
-      value: "08:30"
-    },
     thing3: {
       value: "今日提醒"
     },
     thing4: {
       value: "宝宝，记得完成小任务"
+    },
+    time13: {
+      value: "08:30"
     }
   };
 }
