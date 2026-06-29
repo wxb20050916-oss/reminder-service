@@ -3,7 +3,7 @@ const https = require("https");
 
 const app = express();
 const port = process.env.PORT || 3000;
-const BUILD_TAG = "send-test-real-send-20260629-a";
+const BUILD_TAG = "send-test-real-send-20260629-b";
 const subscribeTemplateId = "22C8PNofZUjrU24koEcfpkMZJX0qjr3Matg4PgZGdo4";
 
 const reminderMessages = {
@@ -100,20 +100,16 @@ async function getAccessTokenData(appid, appsecret) {
   return requestJson(url, { timeoutMs: 5000 });
 }
 
-function buildSubscribeMessageData(type, reminderTime) {
-  const key = reminderMessages[type] ? type : "checkin";
-  const normalizedReminderTime = reminderTime
-    ? reminderTime.replace(/^(\d{4})-(\d{2})-(\d{2})\s+(.+)$/, "$1年$2月$3日 $4")
-    : new Date().toLocaleString("zh-CN", { hour12: false });
+function buildSubscribeMessageData() {
   return {
     thing1: {
-      value: reminderNames[key]
+      value: "减脂打卡"
     },
     time2: {
-      value: normalizedReminderTime
+      value: "08:30"
     },
-    thing3: {
-      value: reminderMessages[key]
+    thing4: {
+      value: "宝宝，记得完成今天的小任务"
     }
   };
 }
